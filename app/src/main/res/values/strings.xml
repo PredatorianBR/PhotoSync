@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">WhatsSync</string>
+    <string name="accessibility_service_label">WhatsSync Automador de Fotos</string>
+    <string name="accessibility_service_description">Permite ao WhatsSync abrir o perfil do WhatsApp dos contatos selecionados e capturar a foto de perfil automaticamente.</string>
+</resources>
