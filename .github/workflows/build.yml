@@ -27,14 +27,7 @@ jobs:
       run: chmod +x gradlew
 
     - name: Build Debug APK
-      run: ./gradlew assembleDebug --no-daemon --info
-      continue-on-error: true
-
-    - name: Show Gradle build errors if failed
-      if: failure() || true
-      run: |
-        find app/build/reports -type f || true
-        cat app/build/reports/problems/problems-report.html || true
+      run: ./gradlew assembleDebug --stacktrace
 
     - name: Upload APK
       uses: actions/upload-artifact@v4

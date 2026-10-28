@@ -68,6 +68,9 @@ dependencies {
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 
+    // Material Components for XML Themes
+    implementation("com.google.android.material:material:1.11.0")
+
     // Coil Image Loading
     implementation("io.coil-kt:coil-compose:2.5.0")
 
