@@ -96,7 +96,11 @@ fun WhatsSyncApp(syncManager: SyncManager) {
     }
 
     val isAccessibilityConnectedByService by syncManager.isAccessibilityConnected.collectAsState()
+    val isRootAvailable by syncManager.isRootAvailable.collectAsState()
     var isAccessibilityActive by remember { mutableStateOf(syncManager.isAccessibilityServiceConnected()) }
+
+    // Can sync if permissions are granted AND (root is available OR accessibility is active)
+    val canSync = hasContactsPermission && (isRootAvailable || isAccessibilityActive)
 
     // Automatically update if service connection state changes
     LaunchedEffect(isAccessibilityConnectedByService) {
@@ -155,7 +159,7 @@ fun WhatsSyncApp(syncManager: SyncManager) {
             )
         },
         floatingActionButton = {
-            if (hasContactsPermission && isAccessibilityActive) {
+            if (canSync) {
                 ExtendedFloatingActionButton(
                     onClick = {
                         if (syncState is SyncState.Syncing) {
@@ -192,8 +196,8 @@ fun WhatsSyncApp(syncManager: SyncManager) {
                 .padding(paddingValues)
                 .background(MaterialTheme.colorScheme.background)
         ) {
-            // Permission & Accessibility Check Cards
-            if (!hasContactsPermission || !isAccessibilityActive) {
+            // Permission & Accessibility / Root Check Cards
+            if (!hasContactsPermission || (!isRootAvailable && !isAccessibilityActive)) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -236,7 +240,7 @@ fun WhatsSyncApp(syncManager: SyncManager) {
                         }
                     }
 
-                    if (hasContactsPermission && !isAccessibilityActive) {
+                    if (hasContactsPermission && !isRootAvailable && !isAccessibilityActive) {
                         Card(
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
                             shape = RoundedCornerShape(16.dp)
@@ -250,7 +254,7 @@ fun WhatsSyncApp(syncManager: SyncManager) {
                                         modifier = Modifier.padding(end = 8.dp)
                                     )
                                     Text(
-                                        text = "Serviço de Acessibilidade Inativo",
+                                        text = "Modo de Captura Necessário",
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 16.sp,
                                         color = MaterialTheme.colorScheme.onSecondaryContainer
@@ -258,16 +262,9 @@ fun WhatsSyncApp(syncManager: SyncManager) {
                                 }
                                 Spacer(modifier = Modifier.height(8.dp))
                                 Text(
-                                    text = "Para capturar as fotos de perfil localmente, ative o serviço do WhatsSync nas configurações do Android.",
+                                    text = "Ative o acesso Root (KernelSU/Magisk) para sincronizar diretamente em Alta Resolução (640x640), ou ative o Serviço de Acessibilidade abaixo para captura por tela.",
                                     fontSize = 14.sp,
                                     color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
-                                )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text(
-                                    text = "Passo a passo:\n1. Clique em 'Ativar Serviço' abaixo.\n2. Vá em 'Apps instalados' ou 'Serviços instalados'.\n3. Selecione 'WhatsSync Automador de Fotos' e ative-o.\n\n* Android 13+: Se aparecer 'Configuração restrita', vá em Configurações do Celular > Apps > WhatsSync > Clique nos 3 pontinhos no canto superior direito > Selecione 'Permitir configurações restritas' e repita o processo.",
-                                    fontSize = 12.sp,
-                                    lineHeight = 16.sp,
-                                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
                                 )
                                 Spacer(modifier = Modifier.height(12.dp))
                                 Button(
@@ -282,9 +279,44 @@ fun WhatsSyncApp(syncManager: SyncManager) {
                                         }
                                     }
                                 ) {
-                                    Text("Ativar Serviço")
+                                    Text("Ativar Acessibilidade")
                                 }
                             }
+                        }
+                    }
+                }
+            } else if (isRootAvailable) {
+                // Info banner indicating Root High-Res Mode is Active!
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "Modo Alta Resolução Ativo (Root/KernelSU)",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            Text(
+                                text = "Extração direta das fotos em 640x640 do cache interno do WhatsApp.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                            )
                         }
                     }
                 }

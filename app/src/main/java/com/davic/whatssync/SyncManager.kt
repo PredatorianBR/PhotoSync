@@ -20,7 +20,7 @@ import java.lang.ref.WeakReference
 
 sealed class SyncState {
     object Idle : SyncState()
-    data class Syncing(val contactName: String, val index: Int, val total: Int) : SyncState()
+    data class Syncing(val contactName: String, val index: Int, val total: Int, val details: String = "") : SyncState()
     data class Completed(val successCount: Int, val failedCount: Int) : SyncState()
     object Paused : SyncState()
 }
@@ -54,6 +54,14 @@ class SyncManager private constructor(context: Context) {
     private val _isAccessibilityConnected = MutableStateFlow(false)
     val isAccessibilityConnected: StateFlow<Boolean> = _isAccessibilityConnected
 
+    private val _isRootAvailable = MutableStateFlow(false)
+    val isRootAvailable: StateFlow<Boolean> = _isRootAvailable
+
+    // Root cache maps
+    private var phoneToLidMap: Map<String, String> = emptyMap()
+    private var highResCachedPhotos: Set<String> = emptySet()
+    private var avatarThumbnails: Set<String> = emptySet()
+
     companion object {
         @Volatile
         private var instance: SyncManager? = null
@@ -62,6 +70,18 @@ class SyncManager private constructor(context: Context) {
             return instance ?: synchronized(this) {
                 instance ?: SyncManager(context).also { instance = it }
             }
+        }
+    }
+
+    init {
+        checkRootAccess()
+    }
+
+    fun checkRootAccess() {
+        scope.launch(Dispatchers.IO) {
+            val hasRoot = RootPhotoManager.isRootAvailable()
+            _isRootAvailable.value = hasRoot
+            Log.d(tag, "Root access available: $hasRoot")
         }
     }
 
@@ -100,6 +120,7 @@ class SyncManager private constructor(context: Context) {
 
     fun loadContacts() {
         scope.launch {
+            checkRootAccess()
             val fetched = withContext(Dispatchers.IO) {
                 contactManager.fetchContacts()
             }
@@ -130,6 +151,14 @@ class SyncManager private constructor(context: Context) {
         updateContactsStatuses(queue)
 
         syncJob = scope.launch {
+            // If root is available, pre-load WhatsApp database and caches in background
+            if (_isRootAvailable.value) {
+                withContext(Dispatchers.IO) {
+                    phoneToLidMap = RootPhotoManager.getPhoneToLidMapping()
+                    highResCachedPhotos = RootPhotoManager.getHighResCachedPhotos()
+                    avatarThumbnails = RootPhotoManager.getAvatarThumbnails()
+                }
+            }
             runSyncLoop()
         }
     }
@@ -143,6 +172,8 @@ class SyncManager private constructor(context: Context) {
     }
 
     private suspend fun runSyncLoop() {
+        val hasRoot = _isRootAvailable.value
+
         while (currentIndex < queue.size) {
             val contact = queue[currentIndex]
             _syncState.value = SyncState.Syncing(contact.name, currentIndex + 1, queue.size)
@@ -150,8 +181,20 @@ class SyncManager private constructor(context: Context) {
             // Mark contact as syncing
             updateContactStatus(contact.contactId, SyncStatus.SYNCING)
 
-            val success = syncSingleContact(contact)
-            
+            var success = false
+
+            // METHOD 1: Direct High-Resolution / Avatar Extraction via Root
+            if (hasRoot) {
+                success = withContext(Dispatchers.IO) {
+                    syncContactDirectlyViaRoot(contact)
+                }
+            }
+
+            // METHOD 2: Fallback to Accessibility Screenshot if root is not available or photo not in cache
+            if (!success && isAccessibilityServiceConnected()) {
+                success = syncSingleContactViaAccessibility(contact)
+            }
+
             if (success) {
                 successCount++
                 updateContactStatus(contact.contactId, SyncStatus.SUCCESS)
@@ -161,20 +204,60 @@ class SyncManager private constructor(context: Context) {
             }
 
             currentIndex++
-            // Cooldown delay between contacts to let screens load and unload cleanly
-            delay(3000)
+            // If using root direct extraction, delay can be very minimal (~100ms)
+            // If using accessibility UI automation, delay is 2-3s
+            if (hasRoot) {
+                delay(100)
+            } else {
+                delay(2000)
+            }
         }
 
         _syncState.value = SyncState.Completed(successCount, failedCount)
     }
 
-    private suspend fun syncSingleContact(contact: PhoneContact): Boolean {
-        Log.d(tag, "Starting sync for contact: ${contact.name}")
+    /**
+     * Direct root extraction: Reads 640x640 high-resolution cache or avatar directly from WhatsApp databases.
+     */
+    private fun syncContactDirectlyViaRoot(contact: PhoneContact): Boolean {
+        try {
+            // Determine phone number or JID
+            val cleanPhone = if (!contact.whatsappJid.isNullOrBlank()) {
+                contact.whatsappJid
+            } else {
+                contact.phoneNumber.replace(Regex("[^0-9]"), "")
+            }
 
-        if (!isAccessibilityServiceConnected()) {
-            Log.e(tag, "Accessibility service not connected")
-            return false
+            if (cleanPhone.isBlank()) {
+                Log.w(tag, "No phone number or JID for contact: ${contact.name}")
+                return false
+            }
+
+            val result = RootPhotoManager.findPhotoForContact(
+                cleanPhone = cleanPhone,
+                phoneToLid = phoneToLidMap,
+                highResCache = highResCachedPhotos,
+                avatarThumbs = avatarThumbnails,
+                cacheDir = appContext.cacheDir
+            )
+
+            if (result != null) {
+                val (photoBytes, isHighRes) = result
+                val updated = contactManager.updateContactPhoto(contact.contactId, photoBytes)
+                if (updated) {
+                    val resType = if (isHighRes) "Alta Resolução 640x640" else "Miniatura"
+                    Log.d(tag, "✓ [Root] $resType aplicada para ${contact.name}")
+                    return true
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(tag, "Error syncing contact via root for ${contact.name}", e)
         }
+        return false
+    }
+
+    private suspend fun syncSingleContactViaAccessibility(contact: PhoneContact): Boolean {
+        Log.d(tag, "Starting accessibility sync for contact: ${contact.name}")
 
         var photoCapturedBitmap: Bitmap? = null
         val lock = Object()
@@ -196,8 +279,8 @@ class SyncManager private constructor(context: Context) {
         // Notify accessibility service of the current target contact details
         serviceRef?.get()?.setTargetContact(contact.name)
 
-        // 2. Wait for photo to be captured by the service (timeout after 15 seconds)
-        val timeoutMs = 15000L
+        // 2. Wait for photo to be captured by the service (timeout after 12 seconds)
+        val timeoutMs = 12000L
         val startTime = System.currentTimeMillis()
         
         withContext(Dispatchers.IO) {
@@ -217,7 +300,6 @@ class SyncManager private constructor(context: Context) {
 
         if (bitmap == null) {
             Log.w(tag, "Sync timed out for ${contact.name} (No photo captured)")
-            // Try to force close screens and return to WhatsSync
             withContext(Dispatchers.Main) {
                 serviceRef?.get()?.forceBack()
             }
@@ -242,7 +324,6 @@ class SyncManager private constructor(context: Context) {
     private fun openContactInWhatsapp(contact: PhoneContact): Boolean {
         return try {
             if (contact.whatsappDataId != null) {
-                // Scenario A: Open WhatsApp profile directly via the Contacts Provider raw contact data link
                 val mimeType = contact.whatsappMimeType ?: "vnd.android.cursor.item/vnd.com.whatsapp.profile"
                 val dataUri = ContentUris.withAppendedId(ContactsContract.Data.CONTENT_URI, contact.whatsappDataId)
                 val intent = Intent(Intent.ACTION_VIEW).apply {
@@ -253,8 +334,6 @@ class SyncManager private constructor(context: Context) {
                 Log.d(tag, "Opened WhatsApp Profile for ${contact.name} via raw contact link ($mimeType)")
                 true
             } else {
-                // Scenario B: Fallback - Open WhatsApp chat via phone number link
-                // Clean the phone number (retain only digits)
                 val cleanNumber = contact.phoneNumber.replace(Regex("[^0-9]"), "")
                 val uriString = "https://api.whatsapp.com/send?phone=$cleanNumber"
                 val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uriString)).apply {
@@ -274,25 +353,19 @@ class SyncManager private constructor(context: Context) {
      * Crop the captured screen photo to the square avatar and compress to JPEG format.
      */
     private fun processBitmap(bitmap: Bitmap): ByteArray {
-        // The WhatsApp profile picture fills the screen width or height in full-screen view.
-        // On portrait devices, it takes the full width and is centered vertically.
         val width = bitmap.width
         val height = bitmap.height
         val minSize = Math.min(width, height)
         
-        // Calculate the central square
         val x = (width - minSize) / 2
         val y = (height - minSize) / 2
 
         val cropped = Bitmap.createBitmap(bitmap, x, y, minSize, minSize)
-        
-        // Scale down to a standard 512x512 resolution for contact photos
-        val scaled = Bitmap.createScaledBitmap(cropped, 512, 512, true)
+        val scaled = Bitmap.createScaledBitmap(cropped, 640, 640, true)
         
         val stream = ByteArrayOutputStream()
         scaled.compress(Bitmap.CompressFormat.JPEG, 90, stream)
         
-        // Recycle bitmaps to avoid memory issues
         if (cropped != bitmap) cropped.recycle()
         scaled.recycle()
         bitmap.recycle()
