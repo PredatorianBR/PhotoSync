@@ -36,6 +36,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 
@@ -93,11 +95,23 @@ fun WhatsSyncApp(syncManager: SyncManager) {
         }
     }
 
+    val isAccessibilityConnectedByService by syncManager.isAccessibilityConnected.collectAsState()
     var isAccessibilityActive by remember { mutableStateOf(syncManager.isAccessibilityServiceConnected()) }
-    
-    // Periodically verify accessibility service connection
-    LaunchedEffect(key1 = syncState) {
+
+    // Automatically update if service connection state changes
+    LaunchedEffect(isAccessibilityConnectedByService) {
         isAccessibilityActive = syncManager.isAccessibilityServiceConnected()
+    }
+
+    // Periodically poll every 1 second while in screen to detect activation without restart
+    LaunchedEffect(Unit) {
+        while (true) {
+            val connected = syncManager.isAccessibilityServiceConnected()
+            if (isAccessibilityActive != connected) {
+                isAccessibilityActive = connected
+            }
+            kotlinx.coroutines.delay(1000)
+        }
     }
 
     // Trigger loading contacts when permissions are granted

@@ -51,6 +51,9 @@ class SyncManager private constructor(context: Context) {
     // Weak reference to the running Accessibility Service instance
     private var serviceRef: WeakReference<WhatsappAccessibilityService>? = null
 
+    private val _isAccessibilityConnected = MutableStateFlow(false)
+    val isAccessibilityConnected: StateFlow<Boolean> = _isAccessibilityConnected
+
     companion object {
         @Volatile
         private var instance: SyncManager? = null
@@ -64,11 +67,35 @@ class SyncManager private constructor(context: Context) {
 
     fun setAccessibilityService(service: WhatsappAccessibilityService?) {
         serviceRef = if (service != null) WeakReference(service) else null
+        _isAccessibilityConnected.value = service != null
         Log.d(tag, "Accessibility Service reference updated: ${service != null}")
     }
 
     fun isAccessibilityServiceConnected(): Boolean {
-        return serviceRef?.get() != null
+        // Double check: either running instance is registered or enabled in system settings
+        val isBound = serviceRef?.get() != null
+        if (isBound) return true
+
+        return isAccessibilityServiceEnabledInSettings()
+    }
+
+    fun isAccessibilityServiceEnabledInSettings(): Boolean {
+        val expectedServiceName = "${appContext.packageName}/${WhatsappAccessibilityService::class.java.canonicalName}"
+        val enabledServices = android.provider.Settings.Secure.getString(
+            appContext.contentResolver,
+            android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ) ?: return false
+
+        val colonSplitter = android.text.TextUtils.SimpleStringSplitter(':')
+        colonSplitter.setString(enabledServices)
+        while (colonSplitter.hasNext()) {
+            val componentName = colonSplitter.next()
+            if (componentName.equals(expectedServiceName, ignoreCase = true) ||
+                componentName.contains(appContext.packageName)) {
+                return true
+            }
+        }
+        return false
     }
 
     fun loadContacts() {
@@ -216,13 +243,14 @@ class SyncManager private constructor(context: Context) {
         return try {
             if (contact.whatsappDataId != null) {
                 // Scenario A: Open WhatsApp profile directly via the Contacts Provider raw contact data link
+                val mimeType = contact.whatsappMimeType ?: "vnd.android.cursor.item/vnd.com.whatsapp.profile"
                 val dataUri = ContentUris.withAppendedId(ContactsContract.Data.CONTENT_URI, contact.whatsappDataId)
                 val intent = Intent(Intent.ACTION_VIEW).apply {
-                    setDataAndType(dataUri, "vnd.android.cursor.item/vnd.com.whatsapp.profile")
+                    setDataAndType(dataUri, mimeType)
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 appContext.startActivity(intent)
-                Log.d(tag, "Opened WhatsApp Profile for ${contact.name} via raw contact link")
+                Log.d(tag, "Opened WhatsApp Profile for ${contact.name} via raw contact link ($mimeType)")
                 true
             } else {
                 // Scenario B: Fallback - Open WhatsApp chat via phone number link

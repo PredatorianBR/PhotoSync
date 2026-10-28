@@ -1,7 +1,10 @@
 package com.davic.whatssync
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
 import android.graphics.Bitmap
+import android.graphics.Path
+import android.graphics.Rect
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -168,21 +171,47 @@ class WhatsappAccessibilityService : AccessibilityService() {
     }
 
     private fun expandProfilePhoto(root: AccessibilityNodeInfo) {
-        // Look for the profile picture ImageView or Avatar
+        // Specifically look for WhatsApp's profile photo view:
+        // id: "wds_profile_picture" or "profile_photo_container"
         val avatarNode = findNodeByCriteria(root) { node ->
-            val desc = node.contentDescription?.toString()?.lowercase() ?: ""
             val id = node.viewIdResourceName?.lowercase() ?: ""
-            desc.contains("foto") || desc.contains("profile") || desc.contains("picture") || 
-            desc.contains("avatar") || desc.contains("imagem do perfil") ||
-            id.contains("picture") || id.contains("avatar") || id.contains("photo")
+            val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+            id.contains("wds_profile_picture") || 
+            id.contains("collapsing_profile_photo_view") ||
+            (id.contains("picture") && !id.contains("media") && !id.contains("thumb")) ||
+            (desc.contains("foto do perfil") || desc.contains("profile photo") || desc.contains("profile picture"))
         }
 
         if (avatarNode != null) {
-            val clicked = clickNode(avatarNode)
-            Log.d(tag, "Clicked profile photo: $clicked")
+            val rect = Rect()
+            avatarNode.getBoundsInScreen(rect)
+            Log.d(tag, "Found profile photo node: id=${avatarNode.viewIdResourceName}, bounds=$rect, clickable=${avatarNode.isClickable}")
+            
+            // Try standard click action first
+            if (clickNode(avatarNode)) {
+                Log.d(tag, "Clicked profile photo node directly")
+                return
+            }
+            
+            // If clickNode fails or isn't processed, perform a precise screen tap gesture on the center of the avatar
+            if (rect.width() > 0 && rect.height() > 0) {
+                tapAtCoordinates(rect.centerX().toFloat(), rect.centerY().toFloat())
+                Log.d(tag, "Performed tap gesture at avatar center: (${rect.centerX()}, ${rect.centerY()})")
+                return
+            }
         } else {
             Log.w(tag, "Profile photo node not found in contact info screen")
         }
+    }
+
+    private fun tapAtCoordinates(x: Float, y: Float) {
+        val clickPath = Path().apply {
+            moveTo(x, y)
+        }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(clickPath, 0, 100))
+            .build()
+        dispatchGesture(gesture, null, null)
     }
 
     @RequiresApi(Build.VERSION_CODES.R)

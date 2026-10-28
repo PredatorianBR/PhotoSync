@@ -22,6 +22,7 @@ data class PhoneContact(
     val hasPhoto: Boolean,
     val whatsappDataId: Long?, // ID in ContactsContract.Data for WhatsApp profile link
     val whatsappRawContactId: Long?,
+    val whatsappMimeType: String? = null,
     var syncStatus: SyncStatus = SyncStatus.PENDING,
     var errorMessage: String? = null
 )
@@ -43,14 +44,16 @@ class ContactManager(private val context: Context) {
             "vnd.android.cursor.item/vnd.com.whatsapp.profile",
             "vnd.android.cursor.item/vnd.com.whatsapp.w4b.profile"
         )
-        val whatsappMap = mutableMapOf<Long, Pair<Long, Long>>() // ContactId -> Pair(DataId, RawContactId)
+        // ContactId -> Triple(DataId, RawContactId, MimeType)
+        val whatsappMap = mutableMapOf<Long, Triple<Long, Long, String>>()
 
         val dataCursor = resolver.query(
             ContactsContract.Data.CONTENT_URI,
             arrayOf(
                 ContactsContract.Data._ID,
                 ContactsContract.Data.CONTACT_ID,
-                ContactsContract.Data.RAW_CONTACT_ID
+                ContactsContract.Data.RAW_CONTACT_ID,
+                ContactsContract.Data.MIMETYPE
             ),
             "${ContactsContract.Data.MIMETYPE} IN (?, ?)",
             whatsappMimes,
@@ -61,12 +64,14 @@ class ContactManager(private val context: Context) {
             val idIndex = cursor.getColumnIndex(ContactsContract.Data._ID)
             val contactIdIndex = cursor.getColumnIndex(ContactsContract.Data.CONTACT_ID)
             val rawContactIdIndex = cursor.getColumnIndex(ContactsContract.Data.RAW_CONTACT_ID)
+            val mimeIndex = cursor.getColumnIndex(ContactsContract.Data.MIMETYPE)
 
             while (cursor.moveToNext()) {
                 val dataId = cursor.getLong(idIndex)
                 val contactId = cursor.getLong(contactIdIndex)
                 val rawContactId = cursor.getLong(rawContactIdIndex)
-                whatsappMap[contactId] = Pair(dataId, rawContactId)
+                val mime = cursor.getString(mimeIndex)
+                whatsappMap[contactId] = Triple(dataId, rawContactId, mime)
             }
         }
 
@@ -111,6 +116,7 @@ class ContactManager(private val context: Context) {
                 val whatsappInfo = whatsappMap[contactId]
                 val whatsappDataId = whatsappInfo?.first
                 val whatsappRawContactId = whatsappInfo?.second
+                val whatsappMimeType = whatsappInfo?.third
 
                 // We want to show contacts that can potentially be synced (we link those that have WhatsApp raw contacts)
                 contactList.add(
@@ -121,7 +127,8 @@ class ContactManager(private val context: Context) {
                         photoUri = photoUri,
                         hasPhoto = hasPhoto,
                         whatsappDataId = whatsappDataId,
-                        whatsappRawContactId = whatsappRawContactId
+                        whatsappRawContactId = whatsappRawContactId,
+                        whatsappMimeType = whatsappMimeType
                     )
                 )
                 processedContacts.add(contactId)
